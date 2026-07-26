@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RBC 4K Enhancer
 // @namespace    https://rbc.ru/
-// @version      3.5.0
+// @version      3.6.0
 // @description  Улучшает отображение rbc.ru на 4K мониторах: расширяет контент, чинит ширину колонки, задаёт читаемую типографику (Golos Text), убирает подгрузку следующих статей, врезки внутри текста и рекламный мусор
 // @author       Nikita
 // @match        *://www.rbc.ru/*
@@ -93,6 +93,11 @@
         // без неё со статьи некуда уйти. Дублируется клавишей Esc.
         backButton: true,
 
+        // Куда ведёт «Назад». Всегда на главную, а не на предыдущую страницу
+        // в истории браузера — иначе из статьи, открытой в новой вкладке или
+        // по прямой ссылке, кнопка увела бы с сайта.
+        backTarget: 'https://www.rbc.ru/',
+
         // Состояние тёмной темы по умолчанию, ДО первого нажатия кнопки.
         // 'system' — следовать теме macOS, 'light' / 'dark' — фиксировать.
         darkDefault: 'system',
@@ -151,6 +156,18 @@
         border: '#2a2e36',
         imageDim: 0.88,       // фото на тёмном светятся — приглушаем
     };
+
+    // Теги, несущие текст. :is() имеет специфичность самого «тяжёлого»
+    // аргумента — здесь это один элемент, поэтому правила с [class*=...]
+    // ниже спокойно перебивают базовый цвет.
+    const DARK_TEXT_TAGS = ':is(p,span,div,li,h1,h2,h3,h4,h5,h6,time,figcaption,td,th,dd,dt,strong,em,b,i)';
+
+    // Куски имён классов, которыми РБК помечает служебный текст.
+    const DARK_MUTED_PATTERNS = [
+        '[class*="description"]', '[class*="-footer"]', '[class*="date"]',
+        '[class*="caption"]', '[class*="leadText"]', '[class*="meta-info"]',
+        '[class*="tab-panel-item"]', '[class*="author"]', '[class*="source"]',
+    ];
 
     // =========================================================================
     //  ТИПОГРАФИКА
@@ -807,6 +824,7 @@
         /* Промо и витрины на всех страницах */
         ${CONFIG.hidePromoEverywhere ? `
         [class*="video-showcase"],
+        [class*="live-media-feature"],
         .card-wrapper,
         .material-content-overflow {
             display: none !important;
@@ -844,6 +862,80 @@
             margin-left: auto !important;
             margin-right: auto !important;
         }
+        ` : ''}
+
+        /* ============================================================
+           ТЁМНАЯ ТЕМА — СИСТЕМНЫЙ СЛОЙ (v3.6)
+
+           У РБК десятки блоков с жёстко прописанными белым фоном и
+           rgba(0,0,0,.545) для текста, причём у половины из них имена
+           классов хешированные (styles_block-description__CBh_) и меняются
+           при каждой пересборке сайта. Ловить их поимённо бесполезно.
+           Поэтому здесь три слоя по возрастанию специфичности:
+             1) обнуляем фон у контейнеров — просвечивает тёмный фон страницы;
+             2) задаём базовый цвет текста через :is(...), у которого
+                специфичность равна одному элементу;
+             3) поверх — приглушённое и заголовочное, где селекторы с
+                [class*=...] заведомо специфичнее базового слоя.
+           Блок идёт последним в файле: при равной специфичности побеждает
+           правило, объявленное позже.
+           ============================================================ */
+
+        /* 1. Фон контейнеров. Ссылки и кнопки в список не входят —
+              фирменные акценты (зелёная кнопка, красная плашка) остаются. */
+        html.tm-dark .article-feature-item :is(div,section,article,ul,ol,li,figure,header),
+        html.tm-dark.tm-rbc-feed .content-custom :is(div,section,article,ul,ol,li,figure,header),
+        html.tm-dark.tm-rbc-feed aside.aside :is(div,section,article,ul,ol,li,figure,header),
+        html.tm-dark.tm-rbc-feed aside.bside :is(div,section,article,ul,ol,li,figure,header),
+        html.tm-dark .topline-desktop :is(div,section,ul,li,nav) {
+            background-color: transparent !important;
+        }
+        html.tm-dark .topline-desktop,
+        html.tm-dark .topline-desktop-container { background-color: ${DARK.bg} !important; }
+
+        /* 2. Базовый цвет текста */
+        html.tm-dark .article-feature-item ${DARK_TEXT_TAGS},
+        html.tm-dark.tm-rbc-feed .content-custom ${DARK_TEXT_TAGS},
+        html.tm-dark.tm-rbc-feed aside.aside ${DARK_TEXT_TAGS},
+        html.tm-dark.tm-rbc-feed aside.bside ${DARK_TEXT_TAGS},
+        html.tm-dark .topline-desktop ${DARK_TEXT_TAGS},
+        html.tm-dark .topline-desktop a,
+        html.tm-dark.tm-rbc-feed a {
+            color: ${DARK.text} !important;
+        }
+
+        /* 3a. Приглушённое: подписи, даты, авторы, служебные вкладки */
+        ${['html.tm-dark .article-feature-item',
+           'html.tm-dark.tm-rbc-feed .content-custom',
+           'html.tm-dark.tm-rbc-feed aside.aside',
+           'html.tm-dark.tm-rbc-feed aside.bside']
+            .flatMap(root => DARK_MUTED_PATTERNS.map(sel => `${root} ${sel}`))
+            .join(',\n        ')} {
+            color: ${DARK.muted} !important;
+        }
+
+        /* 3b. Заголовки — ярче основного текста */
+        html.tm-dark .article-feature-item h1,
+        html.tm-dark .article-feature-item h2,
+        html.tm-dark .article-feature-item h3,
+        html.tm-dark h1.article-entry-title,
+        html.tm-dark .article-feature-item [class*="styles_lead__"],
+        html.tm-dark.tm-rbc-feed a.info-block-title,
+        html.tm-dark.tm-rbc-feed a.news-line-link,
+        html.tm-dark.tm-rbc-feed a.collection-new-item-link,
+        html.tm-dark.tm-rbc-feed [class*="section-header-title"],
+        html.tm-dark.tm-rbc-feed [class*="headline-"] {
+            color: ${DARK.heading} !important;
+        }
+
+        /* 3c. Ссылки внутри текста статьи */
+        html.tm-dark .article-feature-item p.paragraph a,
+        html.tm-dark .article-feature-item blockquote a { color: ${DARK.link} !important; }
+
+        /* 3d. Прочитанное в ленте — тусклее непрочитанного */
+        ${CONFIG.markVisited ? `
+        html.tm-dark.tm-rbc-feed a:visited .info-block-title,
+        html.tm-dark.tm-rbc-feed a.info-block-title:visited { color: #62666e !important; }
         ` : ''}
     `;
 
@@ -950,7 +1042,7 @@
         applyForCurrentRoute();
         watchRouteChanges();
 
-        console.log('%c[RBC 4K Enhancer v3.5] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
+        console.log('%c[RBC 4K Enhancer v3.6] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
     });
 
     // =========================================================================
@@ -1054,12 +1146,10 @@
     }
 
     function goBack() {
-        // history.back() уместен, только если мы действительно пришли с РБК.
-        // Если статью открыли в новой вкладке или по ссылке извне, шаг назад
-        // увёл бы с сайта — в этом случае ведём на главную.
-        const cameFromSite = document.referrer && /(^|\.)rbc\.ru$/.test(new URL(document.referrer, location.href).hostname);
-        if (window.history.length > 1 && cameFromSite) window.history.back();
-        else window.location.href = 'https://www.rbc.ru/';
+        // Всегда на главную, а не history.back(). Поведение предсказуемо
+        // независимо от того, как открыта статья: из ленты, из новой вкладки
+        // или по прямой ссылке из мессенджера.
+        window.location.href = CONFIG.backTarget;
     }
 
     function mountBackButton() {
@@ -1176,7 +1266,16 @@
     //  Утилиты
     // =========================================================================
     function isArticlePath(path) {
-        return /^\/(politics|economics|society|business|technology|finances|life|auto|sport|style|rbcfreenews|crypto)\//.test(path);
+        // Статья — это /<рубрика>/DD/MM/YYYY/<id> либо /rbcfreenews/<id>.
+        //
+        // Раньше здесь был просто список рубрик, и /politics/ — страница
+        // рубрики со своей лентой — считалась статьёй: у неё пряталась
+        // колонка новостей и шапка, а сверху появлялась кнопка «Назад».
+        // Проверка по дате в URL отсекает это и заодно не требует
+        // поддерживать список рубрик: новые разделы заработают сами.
+        // (\/[a-z-]+)? — вложенные рубрики вида /life/style/DD/MM/YYYY/...
+        return /^\/[a-z-]+(\/[a-z-]+)?\/\d{2}\/\d{2}\/\d{4}\/[0-9a-z]+/i.test(path)
+            || /^\/rbcfreenews\/[0-9a-z]+/i.test(path);
     }
 
 })();
