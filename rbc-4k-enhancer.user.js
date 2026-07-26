@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RBC 4K Enhancer
 // @namespace    https://rbc.ru/
-// @version      3.4.0
+// @version      3.5.0
 // @description  Улучшает отображение rbc.ru на 4K мониторах: расширяет контент, чинит ширину колонки, задаёт читаемую типографику (Golos Text), убирает подгрузку следующих статей, врезки внутри текста и рекламный мусор
 // @author       Nikita
 // @match        *://www.rbc.ru/*
@@ -84,16 +84,32 @@
         // Выбор запоминается между страницами и сессиями через GM_setValue.
         darkToggleButton: true,
 
+        // Убирать верхнюю навигационную панель на страницах статей.
+        // Скрывается .site-header целиком — это статичная распорка в 48px,
+        // внутри которой лежит fixed-панель, так что дыры сверху не остаётся.
+        hideTopBarOnArticles: true,
+
+        // Плавающая кнопка «Назад» на статьях. Нужна как замена шапке:
+        // без неё со статьи некуда уйти. Дублируется клавишей Esc.
+        backButton: true,
+
         // Состояние тёмной темы по умолчанию, ДО первого нажатия кнопки.
         // 'system' — следовать теме macOS, 'light' / 'dark' — фиксировать.
         darkDefault: 'system',
 
         // --- Главная и рубрики (v3.3) ---
 
-        // Типографика ленты новостей. Дефолт РБК — 13px/17px, вес 400.
+        // Типографика ЛЕВОЙ колонки «Все новости». Дефолт РБК — 13px/17px.
         feedTitleSize: 16,
         feedTitleLine: 1.4,
         feedTitleWeight: 500,
+
+        // ГЛАВНАЯ лента — центральная колонка (.content-custom).
+        // Заголовки там уже 16px, но интерлиньяж 20px (1.25) — тесно для
+        // двух-трёхстрочных заголовков. Гарнитуру тоже меняем на Golos Text.
+        feedCenterSize: 16,
+        feedCenterLine: 1.35,
+        feedCenterWeight: 500,
 
         // Ширина левой колонки с лентой (px). Дефолт 300 → текст новости 251px,
         // заголовки ломаются на 4–5 строк. На 4K место есть.
@@ -574,33 +590,77 @@
         ` : ''}
 
         /* ============================================================
-           КНОПКА ТЁМНОЙ ТЕМЫ
+           ПЛАВАЮЩИЕ КНОПКИ: назад и тёмная тема
            ============================================================ */
-        ${CONFIG.darkToggleButton ? `
-        #tm-rbc-dark-toggle {
+        #tm-rbc-dark-toggle,
+        #tm-rbc-back {
             position: fixed;
-            right: 24px; bottom: 24px;
-            width: 44px; height: 44px;
-            border: 1px solid rgba(0,0,0,.12);
-            border-radius: 50%;
+            z-index: 2147483647;
+            display: flex; align-items: center; justify-content: center;
+            gap: 8px;
+            cursor: pointer;
+            font-family: ${TYPO.family};
+            border: 1px solid rgba(0,0,0,.16);
             background: #fff;
             color: #16181d;
-            font-size: 19px; line-height: 1;
-            display: flex; align-items: center; justify-content: center;
-            cursor: pointer;
-            box-shadow: 0 2px 10px rgba(0,0,0,.14);
-            z-index: 2147483647;
+            /* Раньше было opacity .55 — белый полупрозрачный кружок на белом
+               фоне не читался как элемент управления и терялся на экране. */
+            opacity: .92;
+            box-shadow: 0 3px 14px rgba(0,0,0,.18);
             transition: transform .12s ease, opacity .12s ease;
-            opacity: .55;
         }
-        #tm-rbc-dark-toggle:hover { opacity: 1; transform: scale(1.06); }
-        html.tm-dark #tm-rbc-dark-toggle {
+        #tm-rbc-dark-toggle:hover,
+        #tm-rbc-back:hover { opacity: 1; transform: translateY(-1px); }
+
+        html.tm-dark #tm-rbc-dark-toggle,
+        html.tm-dark #tm-rbc-back {
             background: ${DARK.surface};
             color: ${DARK.heading};
             border-color: ${DARK.border};
-            box-shadow: 0 2px 10px rgba(0,0,0,.5);
+            box-shadow: 0 3px 14px rgba(0,0,0,.55);
+        }
+
+        ${CONFIG.darkToggleButton ? `
+        #tm-rbc-dark-toggle {
+            right: 24px; bottom: 24px;
+            width: 46px; height: 46px;
+            border-radius: 50%;
+            font-size: 20px; line-height: 1;
         }
         ` : ''}
+
+        ${CONFIG.backButton ? `
+        #tm-rbc-back {
+            left: 24px; top: 18px;
+            height: 40px;
+            padding: 0 18px 0 14px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 500;
+            letter-spacing: .01em;
+        }
+        #tm-rbc-back .tm-arrow { font-size: 17px; line-height: 1; }
+        #tm-rbc-back .tm-hint {
+            font-size: 11px;
+            opacity: .5;
+            border: 1px solid currentColor;
+            border-radius: 4px;
+            padding: 1px 4px;
+        }
+        ` : ''}
+
+        /* ============================================================
+           ВЕРХНЯЯ ПАНЕЛЬ НА СТАТЬЯХ
+           .site-header — статичная распорка 48px, внутри неё fixed-бар.
+           Прячем целиком, поэтому пустого места сверху не остаётся.
+           ============================================================ */
+        ${CONFIG.hideTopBarOnArticles ? `
+        .tm-rbc-article .site-header { display: none !important; }
+        ` : ''}
+
+        /* В режиме чтения по бокам от колонки видно фон body (#f8f8f8) —
+           серая полоса вдоль края. Выравниваем с белым фоном статьи. */
+        html:not(.tm-dark).tm-rbc-article body { background-color: #fff !important; }
 
         /* ============================================================
            ТЁМНАЯ ТЕМА
@@ -689,7 +749,30 @@
             min-width: 0 !important;
         }
 
-        /* Кегль заголовков в ленте */
+        /* Гарнитура на всей странице ленты.
+           Исключаем ra-icon: у РБК иконки — это иконочный шрифт, и если
+           перебить ему font-family, вместо стрелок и лупы полезут буквы. */
+        .tm-rbc-feed .content-custom :not([class*="ra-icon"]),
+        .tm-rbc-feed aside.aside :not([class*="ra-icon"]),
+        .tm-rbc-feed aside.bside :not([class*="ra-icon"]),
+        .tm-rbc-feed .topline-desktop :not([class*="ra-icon"]) {
+            font-family: ${TYPO.family} !important;
+        }
+
+        /* Заголовки ГЛАВНОЙ (центральной) ленты */
+        .tm-rbc-feed .news-line-link,
+        .tm-rbc-feed .collection-new-item-link,
+        .tm-rbc-feed .central-publisher-item a {
+            font-size: ${CONFIG.feedCenterSize}px !important;
+            line-height: ${CONFIG.feedCenterLine} !important;
+            font-weight: ${CONFIG.feedCenterWeight} !important;
+            text-wrap: pretty;
+        }
+        .tm-rbc-feed [class*="section-header-title"] {
+            letter-spacing: -0.01em !important;
+        }
+
+        /* Кегль заголовков в левой колонке «Все новости» */
         .tm-rbc-feed .info-block-title {
             font-family: ${TYPO.family} !important;
             font-size: ${CONFIG.feedTitleSize}px !important;
@@ -867,7 +950,7 @@
         applyForCurrentRoute();
         watchRouteChanges();
 
-        console.log('%c[RBC 4K Enhancer v3.3] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
+        console.log('%c[RBC 4K Enhancer v3.5] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
     });
 
     // =========================================================================
@@ -887,6 +970,11 @@
         document.getElementById('tm-rbc-progress')?.remove();
         document.querySelector('.tm-rbc-readtime')?.remove();
         detachProgress();
+
+        if (CONFIG.backButton) {
+            if (isArt) mountBackButton();
+            else document.getElementById('tm-rbc-back')?.remove();
+        }
 
         if (!isArt) {
             if (CONFIG.feedMaxItems > 0) trimNewsFeed();
@@ -964,6 +1052,36 @@
             requestAnimationFrame(() => { scheduled = false; cut(); });
         }).observe(feed, { childList: true, subtree: true });
     }
+
+    function goBack() {
+        // history.back() уместен, только если мы действительно пришли с РБК.
+        // Если статью открыли в новой вкладке или по ссылке извне, шаг назад
+        // увёл бы с сайта — в этом случае ведём на главную.
+        const cameFromSite = document.referrer && /(^|\.)rbc\.ru$/.test(new URL(document.referrer, location.href).hostname);
+        if (window.history.length > 1 && cameFromSite) window.history.back();
+        else window.location.href = 'https://www.rbc.ru/';
+    }
+
+    function mountBackButton() {
+        if (document.getElementById('tm-rbc-back')) return;
+        const btn = document.createElement('button');
+        btn.id = 'tm-rbc-back';
+        btn.type = 'button';
+        btn.title = 'Назад к ленте (Esc)';
+        btn.innerHTML = '<span class="tm-arrow">←</span><span>Назад</span><span class="tm-hint">Esc</span>';
+        btn.addEventListener('click', goBack);
+        document.body.appendChild(btn);
+    }
+
+    // Esc — то же действие. Не перехватываем, если пользователь печатает
+    // в поле или открыт какой-нибудь модальный диалог сайта.
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || !CONFIG.backButton) return;
+        if (!isArticlePath(location.pathname)) return;
+        const t = e.target;
+        if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+        goBack();
+    });
 
     function mountDarkToggle() {
         if (document.getElementById('tm-rbc-dark-toggle')) return;
