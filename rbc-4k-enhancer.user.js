@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         RBC 4K Enhancer
 // @namespace    https://rbc.ru/
-// @version      3.0.0
-// @description  Улучшает отображение rbc.ru на 4K мониторах: расширяет контент, чинит ширину колонки, задаёт читаемую типографику, убирает подгрузку следующих статей и рекламный мусор
+// @version      3.3.0
+// @description  Улучшает отображение rbc.ru на 4K мониторах: расширяет контент, чинит ширину колонки, задаёт читаемую типографику (Golos Text), убирает подгрузку следующих статей, врезки внутри текста и рекламный мусор
 // @author       Nikita
 // @match        *://www.rbc.ru/*
 // @match        *://rbc.ru/*
 // @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @run-at       document-start
 // @updateURL    https://raw.githubusercontent.com/nkctnm/userscripts/main/rbc-4k-enhancer.user.js
 // @downloadURL  https://raw.githubusercontent.com/nkctnm/userscripts/main/rbc-4k-enhancer.user.js
@@ -23,7 +25,7 @@
         maxContentWidth: 1600,
 
         // Максимальная ширина КОЛОНКИ ТЕКСТА статьи (px).
-        // 720px при 20px PT Serif = ~71 знак в строке.
+        // 720px при 19px Golos Text = ~70 знаков в строке.
         // Оптимум для длинного чтения — 66 знаков (Bringhurst, «The Elements of
         // Typographic Style»), допустимый коридор 60–75. Шире 800 глаз начинает
         // терять начало следующей строки — поэтому НЕ растягиваем на весь 4K.
@@ -40,44 +42,146 @@
 
         // Убирать футер (огромный блок ссылок внизу)?
         hideFooter: true,
+
+        // --- Чистка страницы статьи (v3.1) ---
+
+        // Карточки-врезки со ссылками на другие статьи ПРЯМО МЕЖДУ АБЗАЦАМИ
+        // (.base-card-template, ~164px). Разрывают чтение на середине мысли.
+        hideInlineCards: true,
+
+        // Левая лента «Все новости» — только на страницах статей.
+        // На главной и в рубриках остаётся: там она по делу.
+        hideNewsFeedOnArticles: true,
+
+        // Промо-блоки «РБК в Максе»: короткий призыв в конце текста
+        // (.card-wrapper) и видео-витрина ниже (~383px).
+        hidePromoBlocks: true,
+
+        // Плашка радио/телеканала над статьёй (.material-content-overflow)
+        hideLivePlayer: true,
+
+        // Ограничить высоту главного фото статьи (px). null = не трогать.
+        // Дефолтные 503px съедают пол-экрана до первого абзаца.
+        heroImageMaxHeight: 340,
+
+        // --- Режим чтения и надстройки (v3.2) ---
+
+        // Режим чтения ВСЕГДА включён на страницах статей: остаётся только
+        // текст, колонка центрируется по окну. Навигационная шапка остаётся —
+        // без неё некуда уйти со статьи.
+        readingMode: true,
+
+        // Полоса прогресса чтения сверху экрана
+        progressBar: true,
+        progressBarHeight: 3,
+        progressBarColor: '#d0021b',
+
+        // «~4 мин» под заголовком
+        readingTime: true,
+        wordsPerMinute: 180,
+
+        // Кнопка переключения тёмной темы (кружок в правом нижнем углу).
+        // Выбор запоминается между страницами и сессиями через GM_setValue.
+        darkToggleButton: true,
+
+        // Состояние тёмной темы по умолчанию, ДО первого нажатия кнопки.
+        // 'system' — следовать теме macOS, 'light' / 'dark' — фиксировать.
+        darkDefault: 'system',
+
+        // --- Главная и рубрики (v3.3) ---
+
+        // Типографика ленты новостей. Дефолт РБК — 13px/17px, вес 400.
+        feedTitleSize: 16,
+        feedTitleLine: 1.4,
+        feedTitleWeight: 500,
+
+        // Ширина левой колонки с лентой (px). Дефолт 300 → текст новости 251px,
+        // заголовки ломаются на 4–5 строк. На 4K место есть.
+        feedColumnWidth: 420,
+
+        // Контраст дат и рубрик. Дефолт rgba(0,0,0,.545) ≈ 4.7:1 при 12px —
+        // едва проходит WCAG AA (порог 4.5:1). Ниже ≈ 6:1.
+        feedMetaColor: '#5f636b',
+
+        // Компактная лента: меньше вертикальных отступов + без миниатюр.
+        feedCompact: true,
+
+        // Приглушать уже прочитанные новости (:visited)
+        markVisited: true,
+
+        // Убирать видео-витрины, плашку телеканала и промо на ВСЕХ страницах,
+        // а не только на статьях.
+        hidePromoEverywhere: true,
+
+        // Тёмная тема не только на статьях, но и на главной/в рубриках
+        darkOnFeedPages: true,
+
+        // Обрезать ленту до N элементов. 0 = не обрезать. Подробности почему —
+        // в комментарии к trimNewsFeed() ниже.
+        feedMaxItems: 0,
+    };
+
+    // Тёмная палитра. Не инверсия: белый текст на чёрном даёт halation —
+    // светлые штрихи «растекаются» на тёмном фоне, особенно у тонких
+    // гротесков на Retina. Поэтому контраст снижен примерно до 11:1
+    // вместо 19:1 у чистого чёрного на белом.
+    const DARK = {
+        bg: '#15171c',        // фон страницы
+        surface: '#1b1e24',   // фон карточек и врезок
+        text: '#c9ccd1',      // основной текст
+        heading: '#e6e8eb',   // заголовки — чуть ярче текста
+        muted: '#8b9099',     // подписи, даты, служебное
+        link: '#7ab0ff',      // ссылки: красный РБК на тёмном нечитаем
+        border: '#2a2e36',
+        imageDim: 0.88,       // фото на тёмном светятся — приглушаем
     };
 
     // =========================================================================
     //  ТИПОГРАФИКА
-    //  Шрифт: PT Serif (ParaType) — предустановлен в macOS, спроектирован
-    //  специально под кириллицу, крупный x-height, засечки дают опору глазу
-    //  на длинных текстах. Fallback: Georgia → generic serif.
-    //  Модульная шкала ×1.4 от кегля основного текста.
+    //  Шрифт: Golos Text — по данным Google Fonts, сделан по заказу Smena и
+    //  AIC Media для сайтов государственных и социальных служб, то есть
+    //  кириллица у него первичная, а не адаптированная с латиницы; там же он
+    //  описан как подходящий для длительного чтения.
+    //  Замеры на живой странице (canvas, 19px):
+    //    x-height / cap-height = 0.757, средний знак 10.26px → 70 знаков
+    //    в строке при колонке 720px — ровно в коридоре 60–75 (Bringhurst).
+    //  Fallback: PT Sans (стоит локально) → generic sans-serif.
     // =========================================================================
     const TYPO = {
         enabled: true,
 
-        // Семейство для статьи. Альтернативы: '"Charter", Georgia, serif',
-        // '"PT Sans", "Inter", sans-serif' (если засечки не заходят).
-        family: '"PT Serif", Georgia, "Times New Roman", serif',
+        // Тянуть шрифт с Google Fonts. rbc.ru не блокирует CSP — проверено.
+        // false = использовать только локальные шрифты из fallback.
+        useGoogleFont: true,
+        googleFontUrl: 'https://fonts.googleapis.com/css2?family=Golos+Text:wght@400..700&display=swap',
 
-        bodySize: 20,        // px — основной текст
-        bodyLine: 1.62,      // интерлиньяж: 1.6–1.65 для 20px serif
+        // Альтернативы: '"Fira Sans", sans-serif', '"Onest", sans-serif',
+        // '"PT Sans", sans-serif' (локальный, без внешних запросов),
+        // '"PT Serif", Georgia, serif' (если захочется назад к засечкам).
+        family: '"Golos Text", "PT Sans", -apple-system, sans-serif',
+
+        bodySize: 19,        // px — гротеск с высоким x-height, 20px уже крупно
+        bodyLine: 1.65,      // интерлиньяж
         bodyWeight: 400,
         bodyColor: '#16181d', // почти чёрный, но не #000 — меньше ореола на Retina
         paraGap: 1.05,       // отступ между абзацами, в em
 
-        leadSize: 21,        // «подводка» (жирный абзац-врез)
+        leadSize: 20,        // «подводка» (жирный абзац-врез)
         leadLine: 1.5,
-        leadWeight: 700,
+        leadWeight: 600,
 
-        h1Size: 40,          // заголовок статьи
-        h1Line: 1.12,
+        h1Size: 38,          // заголовок статьи
+        h1Line: 1.15,
         h1Weight: 700,
         h1Tracking: '-0.015em', // крупный кегль требует отрицательного трекинга
 
-        h2Size: 28,          // подзаголовки внутри текста
+        h2Size: 27,          // подзаголовки внутри текста
         h2Line: 1.25,
         h2Weight: 700,
 
         h3Size: 22,
         h3Line: 1.3,
-        h3Weight: 700,
+        h3Weight: 600,
 
         captionSize: 15,     // подписи к картинкам, служебные строки
         captionLine: 1.45,
@@ -90,6 +194,59 @@
         // Переносы по слогам — на узкой колонке убирают «дыры» в выключке
         hyphens: true,
     };
+
+    // =========================================================================
+    //  0. ПОДКЛЮЧЕНИЕ ШРИФТА + МЕТКА СТРАНИЦЫ СТАТЬИ
+    //     Обе операции — на document-start, до первого кадра, чтобы не было
+    //     ни мигания шрифта, ни мигания скрываемых блоков.
+    // =========================================================================
+    const IS_ARTICLE = isArticlePath(location.pathname);
+    document.documentElement.classList.add(IS_ARTICLE ? 'tm-rbc-article' : 'tm-rbc-feed');
+
+    // Хранилище: GM_* если Tampermonkey дал права, иначе localStorage.
+    const store = {
+        get(k, d) {
+            try {
+                if (typeof GM_getValue === 'function') return GM_getValue(k, d);
+                const v = localStorage.getItem(k);
+                return v === null ? d : JSON.parse(v);
+            } catch (e) { return d; }
+        },
+        set(k, v) {
+            try {
+                if (typeof GM_setValue === 'function') return GM_setValue(k, v);
+                localStorage.setItem(k, JSON.stringify(v));
+            } catch (e) { /* приватный режим — просто не запоминаем */ }
+        },
+    };
+
+    // Тему решаем ДО первого кадра, иначе будет вспышка белым.
+    function resolveDark() {
+        const saved = store.get('tm-rbc-dark', null);
+        if (saved === true || saved === false) return saved;
+        if (CONFIG.darkDefault === 'dark') return true;
+        if (CONFIG.darkDefault === 'light') return false;
+        return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    if (resolveDark()) document.documentElement.classList.add('tm-dark');
+
+    if (TYPO.enabled && TYPO.useGoogleFont) {
+        const head = document.head || document.documentElement;
+        for (const [href, cors] of [
+            ['https://fonts.googleapis.com', false],
+            ['https://fonts.gstatic.com', true],
+        ]) {
+            const pre = document.createElement('link');
+            pre.rel = 'preconnect';
+            pre.href = href;
+            if (cors) pre.crossOrigin = 'anonymous';
+            head.appendChild(pre);
+        }
+        const font = document.createElement('link');
+        font.rel = 'stylesheet';
+        font.href = TYPO.googleFontUrl;
+        head.appendChild(font);
+    }
 
     // =========================================================================
     //  1. ПЕРЕХВАТ IntersectionObserver — ДО загрузки скриптов сайта
@@ -316,6 +473,185 @@
         ` : ''}
 
         /* ============================================================
+           ЧИСТКА СТРАНИЦЫ СТАТЬИ (v3.1)
+           ============================================================ */
+
+        /* Карточки-врезки между абзацами */
+        ${CONFIG.hideInlineCards ? `
+        .article-feature-item .base-card-template { display: none !important; }
+        ` : ''}
+
+        /* Левая лента новостей — только на статьях */
+        ${CONFIG.hideNewsFeedOnArticles ? `
+        .tm-rbc-article .main > aside.aside { display: none !important; }
+        .tm-rbc-article .main { justify-content: center !important; }
+        ` : ''}
+
+        /* Промо «РБК в Максе»: врез в тексте + видео-витрина ниже.
+           :has() нужен потому, что у витрины хешированный CSS-модульный класс,
+           который меняется при каждой пересборке сайта — цепляемся за
+           устойчивый фрагмент имени внутри. */
+        ${CONFIG.hidePromoBlocks ? `
+        .article-feature-item .card-wrapper { display: none !important; }
+        .article-feature-item .stroke-y:has([class*="video-showcase"]) { display: none !important; }
+        ` : ''}
+
+        /* Плашка радио/телеканала над статьёй */
+        ${CONFIG.hideLivePlayer ? `
+        .tm-rbc-article .material-content-overflow { display: none !important; }
+        ` : ''}
+
+        /* Главное фото — не на пол-экрана */
+        ${CONFIG.heroImageMaxHeight ? `
+        .article-image .article-image-container {
+            max-height: ${CONFIG.heroImageMaxHeight}px !important;
+            overflow: hidden !important;
+        }
+        .article-image .article-image-container img {
+            width: 100% !important;
+            height: ${CONFIG.heroImageMaxHeight}px !important;
+            object-fit: cover !important;
+        }
+        ` : ''}
+
+        /* ============================================================
+           РЕЖИМ ЧТЕНИЯ (v3.2) — всегда включён на статьях
+           ============================================================ */
+        ${CONFIG.readingMode ? `
+        .tm-rbc-article .main > aside.aside,
+        .tm-rbc-article .column-fullwidth > aside.bside,
+        .tm-rbc-article .article-feature-item [class*="material-meta"] {
+            display: none !important;
+        }
+        .tm-rbc-article .main,
+        .tm-rbc-article .column-central-plus-side {
+            justify-content: center !important;
+            max-width: 100% !important;
+        }
+        .tm-rbc-article .column-fullwidth { justify-content: center !important; }
+        ` : ''}
+
+        /* ============================================================
+           ПОЛОСА ПРОГРЕССА ЧТЕНИЯ
+           ============================================================ */
+        ${CONFIG.progressBar ? `
+        #tm-rbc-progress {
+            position: fixed;
+            top: 0; left: 0;
+            height: ${CONFIG.progressBarHeight}px;
+            width: 0;
+            background: ${CONFIG.progressBarColor};
+            z-index: 2147483646;
+            pointer-events: none;
+            transition: width .08s linear;
+        }
+        ` : ''}
+
+        /* ============================================================
+           ВРЕМЯ ЧТЕНИЯ
+           ============================================================ */
+        ${CONFIG.readingTime ? `
+        .tm-rbc-readtime {
+            font-family: ${TYPO.family};
+            font-size: 14px;
+            font-weight: 500;
+            letter-spacing: .02em;
+            color: ${TYPO.captionColor};
+            margin: 10px 0 2px;
+        }
+        ` : ''}
+
+        /* ============================================================
+           КНОПКА ТЁМНОЙ ТЕМЫ
+           ============================================================ */
+        ${CONFIG.darkToggleButton ? `
+        #tm-rbc-dark-toggle {
+            position: fixed;
+            right: 24px; bottom: 24px;
+            width: 44px; height: 44px;
+            border: 1px solid rgba(0,0,0,.12);
+            border-radius: 50%;
+            background: #fff;
+            color: #16181d;
+            font-size: 19px; line-height: 1;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(0,0,0,.14);
+            z-index: 2147483647;
+            transition: transform .12s ease, opacity .12s ease;
+            opacity: .55;
+        }
+        #tm-rbc-dark-toggle:hover { opacity: 1; transform: scale(1.06); }
+        html.tm-dark #tm-rbc-dark-toggle {
+            background: ${DARK.surface};
+            color: ${DARK.heading};
+            border-color: ${DARK.border};
+            box-shadow: 0 2px 10px rgba(0,0,0,.5);
+        }
+        ` : ''}
+
+        /* ============================================================
+           ТЁМНАЯ ТЕМА
+           ============================================================ */
+        html.tm-dark,
+        html.tm-dark body,
+        html.tm-dark .main,
+        html.tm-dark .main-content,
+        html.tm-dark .column-fullwidth,
+        html.tm-dark .column-central-plus-side,
+        html.tm-dark .article-feature-item {
+            background-color: ${DARK.bg} !important;
+        }
+        html.tm-dark .topline-desktop {
+            background-color: ${DARK.bg} !important;
+            border-bottom-color: ${DARK.border} !important;
+        }
+        html.tm-dark .topline-desktop a,
+        html.tm-dark .topline-desktop-toplink,
+        html.tm-dark .topline-desktop li {
+            color: ${DARK.text} !important;
+        }
+        html.tm-dark .article-feature-item p.paragraph,
+        html.tm-dark .article-feature-item li {
+            color: ${DARK.text} !important;
+        }
+        html.tm-dark h1.article-entry-title,
+        html.tm-dark .article-feature-item h2,
+        html.tm-dark .article-feature-item h3,
+        html.tm-dark .article-feature-item [class*="styles_lead__"] {
+            color: ${DARK.heading} !important;
+        }
+        html.tm-dark .article-feature-item a { color: ${DARK.link} !important; }
+        /* Служебный текст. Часть элементов у РБК окрашена не классом, а
+           жёстким rgba(0,0,0,.545) — на тёмном фоне это чёрное на чёрном,
+           поэтому каждый такой блок перекрываем явно. */
+        html.tm-dark .article-feature-item figcaption,
+        html.tm-dark .article-feature-item [class*="caption"],
+        html.tm-dark .article-feature-item-title,
+        html.tm-dark .article-entry-leadText,
+        html.tm-dark [class*="leadText"],
+        html.tm-dark .article-entry time,
+        html.tm-dark .tm-rbc-readtime,
+        html.tm-dark .meta-info-row-date {
+            color: ${DARK.muted} !important;
+        }
+        html.tm-dark .article-feature-item blockquote {
+            background: ${DARK.surface} !important;
+            padding: 14px 20px !important;
+            border-radius: 4px !important;
+        }
+        html.tm-dark .article-image img,
+        html.tm-dark .article-feature-item img {
+            filter: brightness(${DARK.imageDim}) !important;
+        }
+        html.tm-dark [class*="stroke-"],
+        html.tm-dark .stroke-t, html.tm-dark .stroke-b, html.tm-dark .stroke-y {
+            border-color: ${DARK.border} !important;
+        }
+        /* Пока шрифт грузится, не показываем прыжок начертания */
+        html.tm-dark ::selection { background: ${DARK.link}; color: ${DARK.bg}; }
+
+        /* ============================================================
            МЕЛОЧИ ДЛЯ 4K
            ============================================================ */
         .article-image-container img,
@@ -323,11 +659,89 @@
             max-width: 100% !important;
             height: auto !important;
         }
-        .main > .aside {
-            min-width: 300px !important;
-            max-width: 300px !important;
-        }
         .bside { min-width: 300px !important; }
+
+        /* ============================================================
+           ГЛАВНАЯ И РУБРИКИ (v3.3)
+           ============================================================ */
+
+        /* Ширина колонки с лентой. Центральная забирает остаток сама. */
+        .tm-rbc-feed .main > aside.aside {
+            min-width: ${CONFIG.feedColumnWidth}px !important;
+            max-width: ${CONFIG.feedColumnWidth}px !important;
+            flex: 0 0 ${CONFIG.feedColumnWidth}px !important;
+        }
+        .tm-rbc-feed .content-custom {
+            width: auto !important;
+            flex: 1 1 auto !important;
+            min-width: 0 !important;
+        }
+
+        /* Кегль заголовков в ленте */
+        .tm-rbc-feed .info-block-title {
+            font-family: ${TYPO.family} !important;
+            font-size: ${CONFIG.feedTitleSize}px !important;
+            line-height: ${CONFIG.feedTitleLine} !important;
+            font-weight: ${CONFIG.feedTitleWeight} !important;
+            text-wrap: pretty;
+        }
+
+        /* Контраст служебных строк */
+        .tm-rbc-feed .meta-info-row-date,
+        .tm-rbc-feed [class*="meta-info-row"] {
+            color: ${CONFIG.feedMetaColor} !important;
+        }
+
+        /* Компактная лента */
+        ${CONFIG.feedCompact ? `
+        .tm-rbc-feed article.info-block { padding: 10px 0 !important; }
+        .tm-rbc-feed [class*="styles_newsfeed__"] article.info-block picture,
+        .tm-rbc-feed [class*="styles_newsfeed__"] article.info-block img {
+            display: none !important;
+        }
+        ` : ''}
+
+        /* Прочитанное. :visited разрешает менять только цвет — этого хватает. */
+        ${CONFIG.markVisited ? `
+        .tm-rbc-feed a:visited .info-block-title,
+        .tm-rbc-feed a.info-block-title:visited { color: #8a8f98 !important; }
+        html.tm-dark.tm-rbc-feed a:visited .info-block-title,
+        html.tm-dark.tm-rbc-feed a.info-block-title:visited { color: #62666e !important; }
+        ` : ''}
+
+        /* Промо и витрины на всех страницах */
+        ${CONFIG.hidePromoEverywhere ? `
+        [class*="video-showcase"],
+        .card-wrapper,
+        .material-content-overflow {
+            display: none !important;
+        }
+        ` : ''}
+
+        /* Тёмная тема для главной и рубрик */
+        ${CONFIG.darkOnFeedPages ? `
+        html.tm-dark.tm-rbc-feed,
+        html.tm-dark.tm-rbc-feed body,
+        html.tm-dark.tm-rbc-feed .main,
+        html.tm-dark.tm-rbc-feed .content-custom,
+        html.tm-dark.tm-rbc-feed aside.aside,
+        html.tm-dark.tm-rbc-feed aside.bside,
+        html.tm-dark.tm-rbc-feed article.info-block,
+        html.tm-dark.tm-rbc-feed [class*="styles_newsfeed__"] {
+            background-color: ${DARK.bg} !important;
+        }
+        html.tm-dark.tm-rbc-feed .info-block-title,
+        html.tm-dark.tm-rbc-feed [class*="headline-"],
+        html.tm-dark.tm-rbc-feed [class*="section-header"] {
+            color: ${DARK.heading} !important;
+        }
+        html.tm-dark.tm-rbc-feed .meta-info-row-date,
+        html.tm-dark.tm-rbc-feed [class*="meta-info-row"] {
+            color: ${DARK.muted} !important;
+        }
+        html.tm-dark.tm-rbc-feed [class*="stroke-"] { border-color: ${DARK.border} !important; }
+        html.tm-dark.tm-rbc-feed img { filter: brightness(${DARK.imageDim}) !important; }
+        ` : ''}
 
         ${!CONFIG.hideFooter ? `
         .footer-container {
@@ -437,8 +851,124 @@
             bodyObserver.observe(document.body, { childList: true, subtree: true });
         }
 
-        console.log('%c[RBC 4K Enhancer v3] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
+        if (!IS_ARTICLE && CONFIG.feedMaxItems > 0) trimNewsFeed();
+        if (CONFIG.darkToggleButton) mountDarkToggle();
+        if (IS_ARTICLE && CONFIG.readingTime) mountReadingTime();
+        if (IS_ARTICLE && CONFIG.progressBar) mountProgressBar();
+
+        console.log('%c[RBC 4K Enhancer v3.2] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
     });
+
+    // =========================================================================
+    //  4. РЕЖИМ ЧТЕНИЯ: кнопка темы, время чтения, прогресс
+    // =========================================================================
+
+    // Обрезка ленты новостей.
+    //
+    // Замеры на главной rbc.ru (Chrome, 26.07.2026): лента слева содержит
+    // ~1160 элементов и около 16 000 узлов DOM — это примерно 85% всего
+    // документа. Синхронный reflow страницы занимал в среднем 59.8 мс;
+    // после удаления всего, что дальше 60-го элемента, — 6.0 мс.
+    //
+    // Честная оговорка: замер форсирует layout принудительно, обычный скролл
+    // так себя не ведёт, так что 10× — это разница в худшем случае, а не
+    // ускорение прокрутки в десять раз. Высота страницы при этом НЕ меняется:
+    // её задаёт центральная колонка, а не лента.
+    //
+    // Поэтому по умолчанию выключено (feedMaxItems: 0). Включать имеет смысл,
+    // если заметны рывки при скролле или греется вентилятор на главной.
+    function trimNewsFeed() {
+        const feed = document.querySelector('[class*="styles_newsfeed__"]');
+        if (!feed) return;
+        const cut = () => {
+            const items = feed.querySelectorAll('article.info-block');
+            for (let i = CONFIG.feedMaxItems; i < items.length; i++) items[i].remove();
+        };
+        cut();
+        // Лента догружается по скроллу — подрезаем и подгруженное.
+        let scheduled = false;
+        new MutationObserver(() => {
+            if (scheduled) return;
+            scheduled = true;
+            requestAnimationFrame(() => { scheduled = false; cut(); });
+        }).observe(feed, { childList: true, subtree: true });
+    }
+
+    function mountDarkToggle() {
+        if (document.getElementById('tm-rbc-dark-toggle')) return;
+        const btn = document.createElement('button');
+        btn.id = 'tm-rbc-dark-toggle';
+        btn.type = 'button';
+        const sync = () => {
+            const on = document.documentElement.classList.contains('tm-dark');
+            btn.textContent = on ? '☀' : '☾';
+            btn.title = on ? 'Светлая тема' : 'Тёмная тема';
+            btn.setAttribute('aria-label', btn.title);
+        };
+        btn.addEventListener('click', () => {
+            const on = document.documentElement.classList.toggle('tm-dark');
+            store.set('tm-rbc-dark', on);
+            sync();
+        });
+        sync();
+        document.body.appendChild(btn);
+    }
+
+    function articleParagraphs() {
+        return document.querySelectorAll('.article-feature-item p.paragraph, .article-feature-item .article__text p');
+    }
+
+    function mountReadingTime() {
+        const paras = articleParagraphs();
+        if (!paras.length) return;
+        let words = 0;
+        paras.forEach(p => {
+            const t = p.innerText.trim();
+            if (t) words += t.split(/\s+/).length;
+        });
+        if (!words) return;
+        const minutes = Math.max(1, Math.round(words / CONFIG.wordsPerMinute));
+        const h1 = document.querySelector('h1.article-entry-title, .article-feature-item h1');
+        if (!h1 || h1.parentElement.querySelector('.tm-rbc-readtime')) return;
+        const el = document.createElement('div');
+        el.className = 'tm-rbc-readtime';
+        el.textContent = `~${minutes} мин чтения · ${words} слов`;
+        h1.insertAdjacentElement('afterend', el);
+    }
+
+    function mountProgressBar() {
+        const paras = articleParagraphs();
+        if (!paras.length) return;
+        const first = paras[0];
+        const last = paras[paras.length - 1];
+
+        const bar = document.createElement('div');
+        bar.id = 'tm-rbc-progress';
+        document.body.appendChild(bar);
+
+        let ticking = false;
+        const update = () => {
+            ticking = false;
+            // Считаем по границам ТЕКСТА, а не по высоте документа:
+            // ниже статьи ещё сотни пикселей служебных блоков, и прогресс
+            // по scrollHeight показывал бы 40% там, где читать уже нечего.
+            const startY = first.getBoundingClientRect().top + window.scrollY;
+            const endY = last.getBoundingClientRect().bottom + window.scrollY;
+            const span = endY - startY - window.innerHeight * 0.5;
+            if (span <= 0) { bar.style.width = '0'; return; }
+            const passed = window.scrollY - startY + window.innerHeight * 0.5;
+            const pct = Math.min(100, Math.max(0, (passed / span) * 100));
+            bar.style.width = pct + '%';
+        };
+        const onScroll = () => {
+            if (ticking) return;
+            ticking = true;
+            requestAnimationFrame(update);
+        };
+        window.addEventListener('scroll', onScroll, { passive: true });
+        window.addEventListener('resize', onScroll, { passive: true });
+        update();
+    }
 
     // =========================================================================
     //  Утилиты
