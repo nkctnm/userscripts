@@ -4,8 +4,8 @@
 
 | Скрипт | Сайт | Установить |
 |---|---|---|
-| RBC 4K Enhancer | rbc.ru | [install](https://raw.githubusercontent.com/YOUR-GITHUB-USERNAME/userscripts/main/rbc-4k-enhancer.user.js) |
-| majors.im — Clean Bracket View | majors.im | [install](https://raw.githubusercontent.com/YOUR-GITHUB-USERNAME/userscripts/main/majors-clean-bracket.user.js) |
+| RBC 4K Enhancer | rbc.ru | [install](https://raw.githubusercontent.com/nkctnm/userscripts/main/rbc-4k-enhancer.user.js) |
+| majors.im — Clean Bracket View | majors.im | [install](https://raw.githubusercontent.com/nkctnm/userscripts/main/majors-clean-bracket.user.js) |
 
 ## Как это работает
 

@@ -7,8 +7,8 @@
 // @match        https://majors.im/*
 // @grant        GM_addStyle
 // @run-at       document-start
-// @updateURL    https://raw.githubusercontent.com/YOUR-GITHUB-USERNAME/userscripts/main/majors-clean-bracket.user.js
-// @downloadURL  https://raw.githubusercontent.com/YOUR-GITHUB-USERNAME/userscripts/main/majors-clean-bracket.user.js
+// @updateURL    https://raw.githubusercontent.com/nkctnm/userscripts/main/majors-clean-bracket.user.js
+// @downloadURL  https://raw.githubusercontent.com/nkctnm/userscripts/main/majors-clean-bracket.user.js
 // ==/UserScript==
 
 (function () {

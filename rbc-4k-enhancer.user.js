@@ -8,8 +8,8 @@
 // @match        *://rbc.ru/*
 // @grant        GM_addStyle
 // @run-at       document-start
-// @updateURL    https://raw.githubusercontent.com/YOUR-GITHUB-USERNAME/userscripts/main/rbc-4k-enhancer.user.js
-// @downloadURL  https://raw.githubusercontent.com/YOUR-GITHUB-USERNAME/userscripts/main/rbc-4k-enhancer.user.js
+// @updateURL    https://raw.githubusercontent.com/nkctnm/userscripts/main/rbc-4k-enhancer.user.js
+// @downloadURL  https://raw.githubusercontent.com/nkctnm/userscripts/main/rbc-4k-enhancer.user.js
 // ==/UserScript==
 
 (function () {
