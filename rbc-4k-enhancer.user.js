@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RBC 4K Enhancer
 // @namespace    https://rbc.ru/
-// @version      3.3.0
+// @version      3.4.0
 // @description  Улучшает отображение rbc.ru на 4K мониторах: расширяет контент, чинит ширину колонки, задаёт читаемую типографику (Golos Text), убирает подгрузку следующих статей, врезки внутри текста и рекламный мусор
 // @author       Nikita
 // @match        *://www.rbc.ru/*
@@ -200,8 +200,20 @@
     //     Обе операции — на document-start, до первого кадра, чтобы не было
     //     ни мигания шрифта, ни мигания скрываемых блоков.
     // =========================================================================
-    const IS_ARTICLE = isArticlePath(location.pathname);
-    document.documentElement.classList.add(IS_ARTICLE ? 'tm-rbc-article' : 'tm-rbc-feed');
+    // rbc.ru — SPA на Next.js: переход «главная → статья» и обратно происходит
+    // без перезагрузки страницы. Скрипт с @run-at document-start отрабатывает
+    // один раз, поэтому метку страницы нельзя ставить разово — иначе после
+    // клиентского перехода на статье остаётся класс главной (и наоборот),
+    // и всё завязанное на неё CSS применяется не к той странице.
+    // Отсюда починка: метка синхронизируется на каждой смене URL.
+    function syncPageClass() {
+        const isArt = isArticlePath(location.pathname);
+        const root = document.documentElement;
+        root.classList.toggle('tm-rbc-article', isArt);
+        root.classList.toggle('tm-rbc-feed', !isArt);
+        return isArt;
+    }
+    syncPageClass();
 
     // Хранилище: GM_* если Tampermonkey дал права, иначе localStorage.
     const store = {
@@ -851,13 +863,72 @@
             bodyObserver.observe(document.body, { childList: true, subtree: true });
         }
 
-        if (!IS_ARTICLE && CONFIG.feedMaxItems > 0) trimNewsFeed();
         if (CONFIG.darkToggleButton) mountDarkToggle();
-        if (IS_ARTICLE && CONFIG.readingTime) mountReadingTime();
-        if (IS_ARTICLE && CONFIG.progressBar) mountProgressBar();
+        applyForCurrentRoute();
+        watchRouteChanges();
 
-        console.log('%c[RBC 4K Enhancer v3.2] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
+        console.log('%c[RBC 4K Enhancer v3.3] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
     });
+
+    // =========================================================================
+    //  3.5. РОУТИНГ SPA
+    //  Next.js меняет URL через history.pushState без перезагрузки. Ловим это
+    //  тремя способами сразу: патч history, событие popstate (кнопка «назад»)
+    //  и страховочный опрос — на случай, если сайт сменит способ навигации.
+    // =========================================================================
+
+    function applyForCurrentRoute() {
+        const isArt = syncPageClass();
+
+        // React при клиентском переходе перерисовывает поддерево body и может
+        // снести кнопку — mountDarkToggle сам выходит, если она на месте.
+        if (CONFIG.darkToggleButton) mountDarkToggle();
+
+        document.getElementById('tm-rbc-progress')?.remove();
+        document.querySelector('.tm-rbc-readtime')?.remove();
+        detachProgress();
+
+        if (!isArt) {
+            if (CONFIG.feedMaxItems > 0) trimNewsFeed();
+            return;
+        }
+
+        // После клиентского перехода разметка статьи появляется не мгновенно,
+        // поэтому пробуем несколько раз, пока не найдём абзацы.
+        let tries = 0;
+        const attempt = () => {
+            if (document.querySelector('.article-feature-item p.paragraph')) {
+                if (CONFIG.readingTime) mountReadingTime();
+                if (CONFIG.progressBar) mountProgressBar();
+                return;
+            }
+            if (++tries < 30) setTimeout(attempt, 100);
+        };
+        attempt();
+    }
+
+    function watchRouteChanges() {
+        let lastPath = location.pathname;
+        const onMaybeChanged = () => {
+            if (location.pathname === lastPath) return;
+            lastPath = location.pathname;
+            applyForCurrentRoute();
+        };
+
+        for (const method of ['pushState', 'replaceState']) {
+            const original = history[method].bind(history);
+            history[method] = function (...args) {
+                const result = original(...args);
+                // Классы переключаем синхронно, до отрисовки следующего кадра,
+                // иначе на статье успевает мелькнуть колонка с главной.
+                syncPageClass();
+                onMaybeChanged();
+                return result;
+            };
+        }
+        window.addEventListener('popstate', onMaybeChanged);
+        setInterval(onMaybeChanged, 500);
+    }
 
     // =========================================================================
     //  4. РЕЖИМ ЧТЕНИЯ: кнопка темы, время чтения, прогресс
@@ -936,12 +1007,24 @@
         h1.insertAdjacentElement('afterend', el);
     }
 
+    // Слушатели прогресса живут дольше страницы: при клиентском переходе
+    // старые надо снимать, иначе они копятся с каждой открытой статьёй.
+    let progressHandler = null;
+    function detachProgress() {
+        if (!progressHandler) return;
+        window.removeEventListener('scroll', progressHandler);
+        window.removeEventListener('resize', progressHandler);
+        progressHandler = null;
+    }
+
     function mountProgressBar() {
         const paras = articleParagraphs();
         if (!paras.length) return;
         const first = paras[0];
         const last = paras[paras.length - 1];
 
+        detachProgress();
+        document.getElementById('tm-rbc-progress')?.remove();
         const bar = document.createElement('div');
         bar.id = 'tm-rbc-progress';
         document.body.appendChild(bar);
@@ -965,6 +1048,7 @@
             ticking = true;
             requestAnimationFrame(update);
         };
+        progressHandler = onScroll;
         window.addEventListener('scroll', onScroll, { passive: true });
         window.addEventListener('resize', onScroll, { passive: true });
         update();
