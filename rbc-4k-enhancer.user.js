@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RBC 4K Enhancer
 // @namespace    https://rbc.ru/
-// @version      3.6.0
+// @version      3.8.0
 // @description  Улучшает отображение rbc.ru на 4K мониторах: расширяет контент, чинит ширину колонки, задаёт читаемую типографику (Golos Text), убирает подгрузку следующих статей, врезки внутри текста и рекламный мусор
 // @author       Nikita
 // @match        *://www.rbc.ru/*
@@ -37,8 +37,29 @@
         // Убирать блок "Партнёрские новости" внизу статей?
         hidePartnerNews: true,
 
-        // Убирать рекламные баннеры и adfox-блоки?
+        // Прятать рекламные блоки стилями (косметический уровень)
         hideAds: true,
+
+        // Резать рекламу на СЕТЕВОМ уровне: не давать загружаться скриптам
+        // и фреймам рекламных сетей. Честная оговорка: юзерскрипт работает
+        // внутри страницы и не может, как uBlock Origin, отменить запрос до
+        // его отправки на уровне браузера. Перехватываются fetch, XHR и
+        // установка src у <script>/<iframe>/<img> — этого хватает для того,
+        // что РБК вставляет сам, но полноценным блокировщиком не является.
+        blockAdRequests: true,
+
+        // Хосты рекламных и трекинговых сетей, найденные на живых страницах
+        // rbc.ru: Яндекс.РТБ и AdFox (основные слоты), 24smi (нативные
+        // «читайте также»), Weborama и mail.ru (синхронизация аудиторий).
+        // Метрика (mc.yandex.ru) в список НЕ входит: это аналитика, а не
+        // реклама, и на ней у РБК завязана часть логики страницы.
+        adHosts: [
+            'an.yandex.ru', 'yandex.ru/ads', 'adfox', 'yastatic.net/pcode',
+            '24smi.net', 'smi2.ru', 'smi2.net',
+            'weborama-tech.ru', 'top-fwz1.mail.ru',
+            'criteo', 'doubleclick', 'googlesyndication', 'adriver',
+            'buzzoola', 'betweendigital', 'otm-r.com', 'mediametrics',
+        ],
 
         // Убирать футер (огромный блок ссылок внизу)?
         hideFooter: true,
@@ -239,8 +260,8 @@
     // клиентского перехода на статье остаётся класс главной (и наоборот),
     // и всё завязанное на неё CSS применяется не к той странице.
     // Отсюда починка: метка синхронизируется на каждой смене URL.
-    function syncPageClass() {
-        const isArt = isArticlePath(location.pathname);
+    function syncPageClass(force) {
+        const isArt = typeof force === 'boolean' ? force : isArticlePath(location.pathname);
         const root = document.documentElement;
         root.classList.toggle('tm-rbc-article', isArt);
         root.classList.toggle('tm-rbc-feed', !isArt);
@@ -264,6 +285,64 @@
             } catch (e) { /* приватный режим — просто не запоминаем */ }
         },
     };
+
+    // =========================================================================
+    //  БЛОКИРОВКА РЕКЛАМНЫХ ЗАПРОСОВ
+    //  Ставится первым делом на document-start, до того как страница успеет
+    //  что-либо запросить. Перехватываются четыре пути, которыми РБК
+    //  подтягивает рекламу: fetch, XMLHttpRequest, присвоение .src элементу
+    //  и setAttribute('src', ...).
+    //
+    //  Границы честно: юзерскрипт живёт внутри страницы. uBlock Origin
+    //  отменяет запрос на уровне браузера (declarativeNetRequest) и потому
+    //  ловит в том числе то, что вставлено до нас или в стороннем фрейме.
+    //  Здесь перекрыто то, что вставляет сама страница, — этого достаточно
+    //  для слотов РБК, но полноценной заменой блокировщику это не является.
+    // =========================================================================
+    if (CONFIG.blockAdRequests) installAdBlocker();
+
+    function installAdBlocker() {
+        const hosts = CONFIG.adHosts.map(h => h.toLowerCase());
+        const isAd = (url) => {
+            if (!url) return false;
+            const s = String(url).toLowerCase();
+            return hosts.some(h => s.includes(h));
+        };
+
+        const origFetch = window.fetch;
+        if (typeof origFetch === 'function') {
+            window.fetch = function (input) {
+                const url = typeof input === 'string' ? input : (input && input.url);
+                if (isAd(url)) return Promise.resolve(new Response('', { status: 204 }));
+                return origFetch.apply(this, arguments);
+            };
+        }
+
+        const origOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+            if (isAd(url)) return origOpen.call(this, method, 'data:text/plain,', ...rest);
+            return origOpen.call(this, method, url, ...rest);
+        };
+
+        // Присвоение el.src = '...' — так вставляется большинство загрузчиков
+        for (const ctor of [window.HTMLScriptElement, window.HTMLIFrameElement, window.HTMLImageElement]) {
+            if (!ctor) continue;
+            const desc = Object.getOwnPropertyDescriptor(ctor.prototype, 'src');
+            if (!desc || !desc.set) continue;
+            Object.defineProperty(ctor.prototype, 'src', {
+                configurable: true,
+                enumerable: desc.enumerable,
+                get: desc.get,
+                set(value) { if (!isAd(value)) desc.set.call(this, value); },
+            });
+        }
+
+        const origSetAttribute = Element.prototype.setAttribute;
+        Element.prototype.setAttribute = function (name, value) {
+            if (name && String(name).toLowerCase() === 'src' && isAd(value)) return;
+            return origSetAttribute.apply(this, arguments);
+        };
+    }
 
     // Тему решаем ДО первого кадра, иначе будет вспышка белым.
     function resolveDark() {
@@ -499,15 +578,28 @@
            РЕКЛАМНЫЕ БЛОКИ
            ============================================================ */
         ${CONFIG.hideAds ? `
+        /* .fox-tail — контейнер AdFox, в который РБК складывает все слоты.
+           На одной странице статьи их насчиталось 117 штук: растяжка
+           1332×250 сверху и колонки 300×600 сбоку у каждой подгруженной
+           статьи. Это главная мишень, остальное — подстраховка. */
+        .fox-tail,
+        [id^="yandex_rtb_"],
+        [class*="yandex_rtb_"],
         [id*="adfox"],
         [class*="adfox"],
         [class*="banner-"],
         [class*="js-video-player-ad"],
-        .live-tv-player,
         [class*="ad-slot"],
-        [class*="advert"] {
+        [class*="advert"],
+        [id*="smi2"],
+        [class*="smi2"],
+        [class*="24smi"],
+        [data-ad], [data-ad-slot], [data-ad-client],
+        .live-tv-player {
             display: none !important;
         }
+        /* Прелоадер слота держит высоту даже с пустым содержимым */
+        .with-preloader { min-height: 0 !important; height: auto !important; }
         ` : ''}
 
         /* ============================================================
@@ -825,6 +917,7 @@
         ${CONFIG.hidePromoEverywhere ? `
         [class*="video-showcase"],
         [class*="live-media-feature"],
+        [class*="oprosso"],
         .card-wrapper,
         .material-content-overflow {
             display: none !important;
@@ -931,6 +1024,34 @@
         /* 3c. Ссылки внутри текста статьи */
         html.tm-dark .article-feature-item p.paragraph a,
         html.tm-dark .article-feature-item blockquote a { color: ${DARK.link} !important; }
+
+        /* 3c-bis. ЛИНИИ И МАРКЕРЫ.
+           Разделители у РБК нарисованы чёрным с прозрачностью 8–11%
+           (rgba(0,0,0,.114) у вертикальной линии между колонками,
+           rgba(0,0,0,.11) у границ между новостями в ленте, .stroke-*
+           в блоке курсов). На тёмном фоне это чёрное по чёрному.
+           CSS не умеет выбирать по вычисленному цвету, поэтому
+           перекрашиваем границы у контейнеров целиком. */
+        html.tm-dark .main :is(div,section,article,aside,ul,ol,li,table,tr,td,th,header,nav),
+        html.tm-dark .main > aside.aside,
+        html.tm-dark [class*="stroke-"] {
+            border-color: ${DARK.border} !important;
+        }
+
+        /* Буллеты перед строками главной ленты — это ::before размером 4×4px
+           с background-color: rgb(28,28,28). Псевдоэлементы не наследуют
+           наших правил для фона, поэтому им нужен отдельный селектор. */
+        html.tm-dark [class*="news-line"]::before,
+        html.tm-dark [class*="collection-new-item"]::before,
+        html.tm-dark [class*="story-link"]::before {
+            background-color: ${DARK.muted} !important;
+            border-color: ${DARK.muted} !important;
+        }
+
+        /* Значки-плашки (rgba(0,0,0,.08)) — на тёмном их не видно */
+        html.tm-dark [class*="labels-item"] {
+            background-color: rgba(255,255,255,.10) !important;
+        }
 
         /* 3d. Прочитанное в ленте — тусклее непрочитанного */
         ${CONFIG.markVisited ? `
@@ -1042,7 +1163,7 @@
         applyForCurrentRoute();
         watchRouteChanges();
 
-        console.log('%c[RBC 4K Enhancer v3.6] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
+        console.log('%c[RBC 4K Enhancer v3.8] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
     });
 
     // =========================================================================
@@ -1052,11 +1173,40 @@
     //  и страховочный опрос — на случай, если сайт сменит способ навигации.
     // =========================================================================
 
-    function applyForCurrentRoute() {
-        const isArt = syncPageClass();
+    // Разметка статьи в DOM. Это надёжнее любой регулярки по URL: РБК
+    // публикует материалы под разными формами адресов, и каждый новый вид
+    // приходилось бы дописывать руками. URL нужен только для первого кадра —
+    // на document-start DOM ещё пуст.
+    const ARTICLE_MARKERS = '.article-feature-item, h1.article-entry-title, [class*="article-entry"]';
+    function looksLikeArticle() {
+        return !!document.querySelector(ARTICLE_MARKERS);
+    }
 
+    function applyForCurrentRoute() {
+        applyLayout(syncPageClass());
+
+        // Разметка после клиентского перехода появляется не мгновенно, поэтому
+        // ещё три секунды перепроверяем вывод по DOM и, если он расходится с
+        // догадкой по URL, переключаем режим страницы.
+        let tries = 0;
+        const settled = () => {
+            const byDom = looksLikeArticle();
+            if (byDom || tries > 6) {
+                if (byDom !== document.documentElement.classList.contains('tm-rbc-article')) {
+                    applyLayout(syncPageClass(byDom));
+                } else if (byDom) {
+                    if (CONFIG.readingTime) mountReadingTime();
+                    if (CONFIG.progressBar) mountProgressBar();
+                }
+            }
+            if (++tries < 30) setTimeout(settled, 100);
+        };
+        settled();
+    }
+
+    function applyLayout(isArt) {
         // React при клиентском переходе перерисовывает поддерево body и может
-        // снести кнопку — mountDarkToggle сам выходит, если она на месте.
+        // снести кнопки — обе функции сами выходят, если элемент на месте.
         if (CONFIG.darkToggleButton) mountDarkToggle();
 
         document.getElementById('tm-rbc-progress')?.remove();
@@ -1068,23 +1218,7 @@
             else document.getElementById('tm-rbc-back')?.remove();
         }
 
-        if (!isArt) {
-            if (CONFIG.feedMaxItems > 0) trimNewsFeed();
-            return;
-        }
-
-        // После клиентского перехода разметка статьи появляется не мгновенно,
-        // поэтому пробуем несколько раз, пока не найдём абзацы.
-        let tries = 0;
-        const attempt = () => {
-            if (document.querySelector('.article-feature-item p.paragraph')) {
-                if (CONFIG.readingTime) mountReadingTime();
-                if (CONFIG.progressBar) mountProgressBar();
-                return;
-            }
-            if (++tries < 30) setTimeout(attempt, 100);
-        };
-        attempt();
+        if (!isArt && CONFIG.feedMaxItems > 0) trimNewsFeed();
     }
 
     function watchRouteChanges() {
@@ -1163,15 +1297,32 @@
         document.body.appendChild(btn);
     }
 
-    // Esc — то же действие. Не перехватываем, если пользователь печатает
-    // в поле или открыт какой-нибудь модальный диалог сайта.
-    document.addEventListener('keydown', (e) => {
+    // Esc — то же действие.
+    //
+    // Раньше обработчик висел на document в фазе всплытия, и срабатывание
+    // зависело от того, где стоит фокус: стоило кликнуть по рекламному
+    // <iframe>, как нажатия уходили в его документ и до нас не доходили
+    // вовсе. Отсюда два изменения: слушаем на window в фазе перехвата и
+    // возвращаем фокус на страницу, если он утёк во фрейм.
+    // Заодно блокировка рекламы убирает большую часть таких фреймов.
+    function onEscape(e) {
         if (e.key !== 'Escape' || !CONFIG.backButton) return;
-        if (!isArticlePath(location.pathname)) return;
+        if (!document.documentElement.classList.contains('tm-rbc-article')) return;
         const t = e.target;
         if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
         goBack();
-    });
+    }
+    window.addEventListener('keydown', onEscape, true);
+    document.addEventListener('keydown', onEscape, true);
+
+    // Фокус, утёкший в скрытый фрейм, забирает себе клавиатуру.
+    window.addEventListener('focusin', (e) => {
+        const el = e.target;
+        if (el && el.tagName === 'IFRAME' && el.offsetParent === null) {
+            el.blur();
+            window.focus();
+        }
+    }, true);
 
     function mountDarkToggle() {
         if (document.getElementById('tm-rbc-dark-toggle')) return;
@@ -1273,8 +1424,11 @@
         // колонка новостей и шапка, а сверху появлялась кнопка «Назад».
         // Проверка по дате в URL отсекает это и заодно не требует
         // поддерживать список рубрик: новые разделы заработают сами.
-        // (\/[a-z-]+)? — вложенные рубрики вида /life/style/DD/MM/YYYY/...
-        return /^\/[a-z-]+(\/[a-z-]+)?\/\d{2}\/\d{2}\/\d{4}\/[0-9a-z]+/i.test(path)
+        // В имени рубрики бывают подчёркивания и цифры:
+        // /technology_and_media/, /spb_sz/. Без них статьи из таких разделов
+        // считались лентой и открывались без режима чтения.
+        // (\/[…]+)? — вложенные рубрики вида /life/style/DD/MM/YYYY/...
+        return /^\/[a-z0-9_-]+(\/[a-z0-9_-]+)?\/\d{2}\/\d{2}\/\d{4}\/[0-9a-z]+/i.test(path)
             || /^\/rbcfreenews\/[0-9a-z]+/i.test(path);
     }
 
