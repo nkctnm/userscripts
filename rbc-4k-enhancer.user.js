@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RBC 4K Enhancer
 // @namespace    https://rbc.ru/
-// @version      3.8.0
+// @version      3.9.0
 // @description  Улучшает отображение rbc.ru на 4K мониторах: расширяет контент, чинит ширину колонки, задаёт читаемую типографику (Golos Text), убирает подгрузку следующих статей, врезки внутри текста и рекламный мусор
 // @author       Nikita
 // @match        *://www.rbc.ru/*
@@ -151,6 +151,15 @@
         // Приглушать уже прочитанные новости (:visited)
         markVisited: true,
 
+        // Убирать из всех лент материалы РБК Pro — их всё равно не открыть
+        // без подписки. Маркеры взяты с живой главной:
+        //   a.meta-info-row-project  — подпись «Подписка на РБК» под карточкой,
+        //     52 штуки на странице, и все 52 ведут на pro.rbc.ru;
+        //   .labels-item-pro         — значок Pro в строках блока «Главное»;
+        //   ссылка на pro.rbc.ru     — подстраховка на случай, если РБК
+        //     переименует классы.
+        hideProArticles: true,
+
         // Убирать видео-витрины, плашку телеканала и промо на ВСЕХ страницах,
         // а не только на статьях.
         hidePromoEverywhere: true,
@@ -177,6 +186,17 @@
         border: '#2a2e36',
         imageDim: 0.88,       // фото на тёмном светятся — приглушаем
     };
+
+    // Слушатели прогресса живут дольше страницы: при клиентском переходе
+    // старые надо снимать, иначе они копятся с каждой открытой статьёй.
+    //
+    // Объявление стоит ЗДЕСЬ, в самом верху, и это не косметика. Раньше оно
+    // лежало рядом с detachProgress() в конце файла — и когда Tampermonkey
+    // успевал внедриться поздно (readyState уже не 'loading'), onReady
+    // вызывал колбэк синхронно, ещё до того как интерпретатор доходил до
+    // этой строки. Обращение к переменной в её временной мёртвой зоне
+    // роняло скрипт с ReferenceError ровно посередине инициализации.
+    let progressHandler = null;
 
     // Теги, несущие текст. :is() имеет специфичность самого «тяжёлого»
     // аргумента — здесь это один элемент, поэтому правила с [class*=...]
@@ -905,6 +925,27 @@
         }
         ` : ''}
 
+        /* ============================================================
+           МАТЕРИАЛЫ РБК PRO
+           Прячем карточку целиком, а не только ссылку: пустая рамка в ленте
+           хуже, чем её отсутствие. Ловим по контейнеру элемента ленты через
+           :has() — так навигационная ссылка «Подписка на РБК» в шапке,
+           которая тоже ведёт на pro.rbc.ru, остаётся на месте.
+           ============================================================ */
+        ${CONFIG.hideProArticles ? `
+        article.info-block:has(a.meta-info-row-project),
+        article.info-block:has(a[href*="pro.rbc.ru"]),
+        .news-line-wrapper:has(.labels-item-pro),
+        .news-line-wrapper:has(a[href*="pro.rbc.ru"]),
+        .collection-new-item:has(.labels-item-pro),
+        .collection-new-item:has(a[href*="pro.rbc.ru"]),
+        .central-publisher-item:has(a.meta-info-row-project),
+        .central-publisher-item:has(a[href*="pro.rbc.ru"]),
+        .base-card-template:has(a[href*="pro.rbc.ru"]) {
+            display: none !important;
+        }
+        ` : ''}
+
         /* Прочитанное. :visited разрешает менять только цвет — этого хватает. */
         ${CONFIG.markVisited ? `
         .tm-rbc-feed a:visited .info-block-title,
@@ -1071,11 +1112,24 @@
     // =========================================================================
     //  3. JS
     // =========================================================================
+    // Колбэк НИКОГДА не вызывается синхронно, даже если DOM уже готов:
+    // setTimeout откладывает его на следующий тик, к которому тело скрипта
+    // гарантированно доисполнено целиком. Это защищает от целого класса
+    // ошибок «обращение к объявленному ниже», а не только от той, что уже
+    // случилась с progressHandler.
+    //
+    // try/catch — вторая линия: раньше одно исключение здесь уносило с собой
+    // всё, что шло после него, включая слежение за сменой маршрута. Внешне
+    // это выглядело как «иногда страница обрабатывается, иногда нет».
     function onReady(fn) {
+        const guarded = () => {
+            try { fn(); }
+            catch (e) { console.error('[RBC 4K Enhancer] сбой инициализации:', e); }
+        };
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', fn);
+            document.addEventListener('DOMContentLoaded', guarded);
         } else {
-            fn();
+            setTimeout(guarded, 0);
         }
     }
 
@@ -1163,7 +1217,7 @@
         applyForCurrentRoute();
         watchRouteChanges();
 
-        console.log('%c[RBC 4K Enhancer v3.8] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
+        console.log('%c[RBC 4K Enhancer v3.9] Активирован', 'color: #00ff41; font-size: 14px; font-weight: bold;');
     });
 
     // =========================================================================
@@ -1366,9 +1420,6 @@
         h1.insertAdjacentElement('afterend', el);
     }
 
-    // Слушатели прогресса живут дольше страницы: при клиентском переходе
-    // старые надо снимать, иначе они копятся с каждой открытой статьёй.
-    let progressHandler = null;
     function detachProgress() {
         if (!progressHandler) return;
         window.removeEventListener('scroll', progressHandler);
