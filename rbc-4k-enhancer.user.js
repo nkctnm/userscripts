@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RBC 4K Enhancer
 // @namespace    https://rbc.ru/
-// @version      3.9.0
+// @version      3.10.0
 // @description  Улучшает отображение rbc.ru на 4K мониторах: расширяет контент, чинит ширину колонки, задаёт читаемую типографику (Golos Text), убирает подгрузку следующих статей, врезки внутри текста и рекламный мусор
 // @author       Nikita
 // @match        *://www.rbc.ru/*
@@ -198,6 +198,10 @@
     // роняло скрипт с ReferenceError ровно посередине инициализации.
     let progressHandler = null;
 
+    // Атрибут-метка «спрятано нами». Скрывает CSS, DOM при этом не трогаем —
+    // подробности в комментарии у killInfiniteScroll.
+    const HIDDEN_ATTR = 'data-tm-hidden';
+
     // Теги, несущие текст. :is() имеет специфичность самого «тяжёлого»
     // аргумента — здесь это один элемент, поэтому правила с [class*=...]
     // ниже спокойно перебивают базовый цвет.
@@ -265,8 +269,11 @@
         quoteLine: 1.45,
         quoteAccent: '#d0021b', // фирменный красный РБК
 
-        // Переносы по слогам — на узкой колонке убирают «дыры» в выключке
-        hyphens: true,
+        // Переносы по слогам. Выключены: слова переносятся целиком, дефисов
+        // в конце строк нет. Ценой этого правый край становится более рваным
+        // — на колонке в 720px это заметно, но терпимо.
+        // true вернёт hyphens: auto (нужен lang="ru" у документа, он есть).
+        hyphens: false,
     };
 
     // =========================================================================
@@ -283,11 +290,25 @@
     function syncPageClass(force) {
         const isArt = typeof force === 'boolean' ? force : isArticlePath(location.pathname);
         const root = document.documentElement;
+        // На настоящем document-start корневого элемента может ещё не быть:
+        // скрипт стартует раньше, чем парсер дошёл до <html>. Без этой
+        // проверки инициализация падала с TypeError на первой же строке и
+        // не выполнялось вообще ничего.
+        if (!root) return isArt;
         root.classList.toggle('tm-rbc-article', isArt);
         root.classList.toggle('tm-rbc-feed', !isArt);
         return isArt;
     }
-    syncPageClass();
+
+    // Выполнить, как только появится <html>.
+    function whenRootReady(fn) {
+        if (document.documentElement) { fn(); return; }
+        new MutationObserver((_, mo) => {
+            if (document.documentElement) { mo.disconnect(); fn(); }
+        }).observe(document, { childList: true, subtree: true });
+    }
+
+    whenRootReady(syncPageClass);
 
     // Хранилище: GM_* если Tampermonkey дал права, иначе localStorage.
     const store = {
@@ -372,9 +393,11 @@
         if (CONFIG.darkDefault === 'light') return false;
         return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     }
-    if (resolveDark()) document.documentElement.classList.add('tm-dark');
+    if (resolveDark()) whenRootReady(() => document.documentElement.classList.add('tm-dark'));
 
-    if (TYPO.enabled && TYPO.useGoogleFont) {
+    if (TYPO.enabled && TYPO.useGoogleFont) whenRootReady(installGoogleFont);
+
+    function installGoogleFont() {
         const head = document.head || document.documentElement;
         for (const [href, cors] of [
             ['https://fonts.googleapis.com', false],
@@ -597,6 +620,9 @@
         /* ============================================================
            РЕКЛАМНЫЕ БЛОКИ
            ============================================================ */
+        /* Всё, что скрипт прячет вместо удаления из DOM */
+        [${HIDDEN_ATTR}] { display: none !important; }
+
         ${CONFIG.hideAds ? `
         /* .fox-tail — контейнер AdFox, в который РБК складывает все слоты.
            На одной странице статьи их насчиталось 117 штук: растяжка
@@ -1101,12 +1127,16 @@
         ` : ''}
     `;
 
-    if (typeof GM_addStyle === 'function') {
-        GM_addStyle(css);
-    } else {
-        const style = document.createElement('style');
-        style.textContent = css;
-        (document.head || document.documentElement).appendChild(style);
+    whenRootReady(injectCss);
+
+    function injectCss() {
+        if (typeof GM_addStyle === 'function') {
+            GM_addStyle(css);
+        } else {
+            const style = document.createElement('style');
+            style.textContent = css;
+            (document.head || document.documentElement).appendChild(style);
+        }
     }
 
     // =========================================================================
@@ -1126,10 +1156,19 @@
             try { fn(); }
             catch (e) { console.error('[RBC 4K Enhancer] сбой инициализации:', e); }
         };
+        // Ждём именно <body>, а не только readyState. Tampermonkey умеет
+        // внедриться так, что readyState уже 'complete', но тело документа
+        // ещё не разобрано — тогда observe(document.body) падал на null.
+        const start = () => {
+            if (document.body) { setTimeout(guarded, 0); return; }
+            new MutationObserver((_, mo) => {
+                if (document.body) { mo.disconnect(); setTimeout(guarded, 0); }
+            }).observe(document.documentElement || document, { childList: true, subtree: true });
+        };
         if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', guarded);
+            document.addEventListener('DOMContentLoaded', start);
         } else {
-            setTimeout(guarded, 0);
+            whenRootReady(start);
         }
     }
 
@@ -1140,43 +1179,61 @@
         }
 
         if (CONFIG.killInfiniteScroll) {
-            const removeLoadMore = () => {
-                document.querySelectorAll('.rbc-infinity-scroller-loader, .infinity-load-more').forEach(el => el.remove());
+            // ВАЖНО: ничего не удаляем из DOM.
+            //
+            // Раньше здесь стоял el.remove(), и это давало сразу три беды.
+            // Узлы принадлежат React: он держит на них ссылки, и удаление
+            // из-под него ломает согласование дерева — отсюда белый экран.
+            // Удаление само по себе является мутацией, поэтому наблюдатель
+            // будил сам себя, а React возвращал узел назад: получался
+            // бесконечный цикл «удалил — вернул — удалил», видимый как
+            // моргание страницы при прокрутке.
+            //
+            // Теперь помечаем узел атрибутом, а прячет его CSS. Атрибут
+            // не входит в пропсы React, поэтому он его не трогает, а
+            // наблюдатель слушает только childList — установка атрибута
+            // его не будит, и цикл невозможен по построению.
+            const hide = (el) => {
+                if (el && !el.hasAttribute(HIDDEN_ATTR)) el.setAttribute(HIDDEN_ATTR, '');
             };
-            removeLoadMore();
+            const hideLoadMore = () => {
+                document.querySelectorAll('.rbc-infinity-scroller-loader, .infinity-load-more').forEach(hide);
+            };
+            hideLoadMore();
 
             const watchTarget = document.querySelector('.column-central-plus-side');
             if (watchTarget) {
                 const cleanupArticles = () => {
-                    const fullwidthBlocks = watchTarget.querySelectorAll(':scope > .column-fullwidth');
-                    if (fullwidthBlocks.length > 1) {
-                        let foundFirst = false;
-                        Array.from(watchTarget.children).forEach(child => {
-                            if (child.classList.contains('column-fullwidth')) {
-                                if (!foundFirst) {
-                                    foundFirst = true;
-                                } else {
-                                    child.remove();
-                                }
-                            } else if (foundFirst && child.classList.contains('stroke-t')) {
-                                child.remove();
-                            }
-                        });
-                    }
+                    let foundFirst = false;
+                    Array.from(watchTarget.children).forEach(child => {
+                        if (child.classList.contains('column-fullwidth')) {
+                            if (!foundFirst) foundFirst = true;
+                            else hide(child);
+                        } else if (foundFirst && child.classList.contains('stroke-t')) {
+                            hide(child);
+                        }
+                    });
                     // Вторая и последующие статьи внутри одного main
                     const arts = document.querySelectorAll('.main-content > main > .article-feature-item');
-                    for (let i = 1; i < arts.length; i++) arts[i].remove();
+                    for (let i = 1; i < arts.length; i++) hide(arts[i]);
 
-                    removeLoadMore();
+                    hideLoadMore();
                 };
 
-                const cpsObserver = new MutationObserver(cleanupArticles);
-                cpsObserver.observe(watchTarget, { childList: true, subtree: true });
+                // Троттлим: за один кадр React может добавить десятки узлов,
+                // обходить дерево на каждый из них незачем.
+                let queued = false;
+                const schedule = () => {
+                    if (queued) return;
+                    queued = true;
+                    requestAnimationFrame(() => { queued = false; cleanupArticles(); });
+                };
+
+                new MutationObserver(schedule).observe(watchTarget, { childList: true, subtree: true });
 
                 const mainContent = document.querySelector('.main-content');
                 if (mainContent) {
-                    const mcObserver = new MutationObserver(cleanupArticles);
-                    mcObserver.observe(mainContent, { childList: true, subtree: true });
+                    new MutationObserver(schedule).observe(mainContent, { childList: true, subtree: true });
                 }
                 cleanupArticles();
             }
@@ -1237,25 +1294,42 @@
     }
 
     function applyForCurrentRoute() {
-        applyLayout(syncPageClass());
+        const byUrl = isArticlePath(location.pathname);
+        applyLayout(syncPageClass(byUrl));
 
         // Разметка после клиентского перехода появляется не мгновенно, поэтому
-        // ещё три секунды перепроверяем вывод по DOM и, если он расходится с
-        // догадкой по URL, переключаем режим страницы.
-        let tries = 0;
-        const settled = () => {
-            const byDom = looksLikeArticle();
-            if (byDom || tries > 6) {
-                if (byDom !== document.documentElement.classList.contains('tm-rbc-article')) {
-                    applyLayout(syncPageClass(byDom));
-                } else if (byDom) {
+        // три секунды присматриваемся к DOM.
+        //
+        // Важное правило: DOM может ТОЛЬКО повысить страницу до статьи, но
+        // никогда не понижает её обратно до ленты. Иначе, пока React ещё не
+        // отрисовал материал, мы бы увидели «маркеров нет» и сорвали режим
+        // чтения на настоящей статье. А обратный случай — адрес незнакомой
+        // формы, но разметка статьи налицо — как раз и надо ловить.
+        if (byUrl) {
+            let tries = 0;
+            const mountWhenReady = () => {
+                if (document.querySelector('.article-feature-item p.paragraph')) {
                     if (CONFIG.readingTime) mountReadingTime();
                     if (CONFIG.progressBar) mountProgressBar();
+                    return;
                 }
+                if (++tries < 30) setTimeout(mountWhenReady, 100);
+            };
+            mountWhenReady();
+            return;
+        }
+
+        let tries = 0;
+        const watchForArticle = () => {
+            if (looksLikeArticle()) {
+                applyLayout(syncPageClass(true));
+                if (CONFIG.readingTime) mountReadingTime();
+                if (CONFIG.progressBar) mountProgressBar();
+                return;
             }
-            if (++tries < 30) setTimeout(settled, 100);
+            if (++tries < 30) setTimeout(watchForArticle, 100);
         };
-        settled();
+        watchForArticle();
     }
 
     function applyLayout(isArt) {
@@ -1321,7 +1395,9 @@
         if (!feed) return;
         const cut = () => {
             const items = feed.querySelectorAll('article.info-block');
-            for (let i = CONFIG.feedMaxItems; i < items.length; i++) items[i].remove();
+            for (let i = CONFIG.feedMaxItems; i < items.length; i++) {
+                if (!items[i].hasAttribute(HIDDEN_ATTR)) items[i].setAttribute(HIDDEN_ATTR, '');
+            }
         };
         cut();
         // Лента догружается по скроллу — подрезаем и подгруженное.
@@ -1399,7 +1475,12 @@
     }
 
     function articleParagraphs() {
-        return document.querySelectorAll('.article-feature-item p.paragraph, .article-feature-item .article__text p');
+        const all = document.querySelectorAll('.article-feature-item p.paragraph, .article-feature-item .article__text p');
+        // Только видимые. Последним абзацем легко оказывается тот, что лежит
+        // внутри скрытого нами промо-блока: у скрытого элемента размеры
+        // нулевые, отсчёт прогресса ломался и полоса прыгала с нуля сразу
+        // на сто. По той же причине из подсчёта слов уходил бы мусор.
+        return [...all].filter(p => p.offsetParent !== null || p.getClientRects().length > 0);
     }
 
     function mountReadingTime() {
@@ -1442,15 +1523,21 @@
         let ticking = false;
         const update = () => {
             ticking = false;
-            // Считаем по границам ТЕКСТА, а не по высоте документа:
-            // ниже статьи ещё сотни пикселей служебных блоков, и прогресс
-            // по scrollHeight показывал бы 40% там, где читать уже нечего.
+            // Считаем по границам ТЕКСТА, а не по высоте документа: ниже
+            // статьи ещё сотни пикселей служебных блоков, и прогресс по
+            // scrollHeight показывал бы 40% там, где читать уже нечего.
+            //
+            // Точка отсчёта — нижняя кромка экрана. Полоса начинает расти,
+            // как только первый абзац появился снизу, и доходит до 100% в
+            // тот момент, когда низ последнего абзаца выходит на нижний край.
+            // В прошлой формуле был сдвиг на пол-экрана, из-за которого
+            // первые полторы сотни пикселей прокрутки полоса стояла в нуле.
             const startY = first.getBoundingClientRect().top + window.scrollY;
             const endY = last.getBoundingClientRect().bottom + window.scrollY;
-            const span = endY - startY - window.innerHeight * 0.5;
-            if (span <= 0) { bar.style.width = '0'; return; }
-            const passed = window.scrollY - startY + window.innerHeight * 0.5;
-            const pct = Math.min(100, Math.max(0, (passed / span) * 100));
+            const total = endY - startY;
+            if (total <= 0) { bar.style.width = '0'; return; }
+            const seen = window.scrollY + window.innerHeight - startY;
+            const pct = Math.min(100, Math.max(0, (seen / total) * 100));
             bar.style.width = pct + '%';
         };
         const onScroll = () => {
